@@ -349,6 +349,7 @@ func discoverTestSuites(resultsDir string) []*TestSuite {
 		"storage": filepath.Join(resultsDir, "storage", "storage-log.txt"),
 		"ssp":     filepath.Join(resultsDir, "ssp", "ssp-log.txt"),
 		"tier2":   filepath.Join(resultsDir, "tier2", "tier2-log.txt"),
+		"csi":     filepath.Join(resultsDir, "csi", "csi-log.txt"),
 	}
 
 	for suiteName, logPath := range suitePatterns {
@@ -439,6 +440,10 @@ func discoverTestTotalsByDryRun(resultsDir string) map[string]int {
 
 // runDryRunForSuite runs a dry-run command for a specific test suite and returns the test count
 func runDryRunForSuite(suiteName, resultsDir string) int {
+	if suiteName == "csi" {
+		return 1
+	}
+
 	// Create a separate dry-run directory to avoid interfering with actual test monitoring
 	dryRunBaseDir := filepath.Join(resultsDir, ".dry-run")
 	suiteResultsDir := filepath.Join(dryRunBaseDir, suiteName)
@@ -565,6 +570,8 @@ func runDryRunForSuite(suiteName, resultsDir string) int {
 	}
 
 	switch suiteName {
+	case "csi":
+		return 0
 	case "compute":
 		kubevirtScript := filepath.Join(scriptDir, "kubevirt", "test-kubevirt.sh")
 		cmd = exec.Command("/bin/bash", kubevirtScript)
@@ -712,6 +719,26 @@ func parseTestCountFromDryRun(output, suiteName string) int {
 
 // processSuiteLine processes a single line from a test suite log
 func processSuiteLine(suite *TestSuite, line string) {
+	if suite.Name == "csi" {
+		if strings.Contains(line, "CSI Harness suite started") {
+			suite.Total = 1
+			return
+		}
+		if strings.Contains(line, "CSI Harness suite finished exit=") || strings.Contains(line, "CSI Harness suite skipped") {
+			suite.Total = 1
+			suite.Completed = 1
+			if strings.Contains(line, "exit=0") {
+				suite.Passed = 1
+			} else if strings.Contains(line, "exit=") {
+				suite.Failed = 1
+			}
+			suite.Finished = true
+			suite.EndTime = time.Now()
+			return
+		}
+		return
+	}
+
 	// Check for total specs detection (Ginkgo) - only if we don't already have a pre-discovered total
 	if suite.Total == 0 {
 		if match := specRegex.FindStringSubmatch(line); match != nil {

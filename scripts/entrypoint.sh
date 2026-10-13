@@ -140,38 +140,6 @@ then
 fi
 export DRY_RUN_FLAG
 
-get_virtctl
-
-REGISTRY_CONFIG=$(mktemp)
-oc get secret/pull-secret -n openshift-config -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d > "${REGISTRY_CONFIG}"
-export REGISTRY_CONFIG
-VIRT_OPERATOR_IMAGE=$(oc get deployment virt-operator -n openshift-cnv -o jsonpath='{.spec.template.spec.containers[0].image}')
-
-INSECURE_FLAG=""
-
-KUBEVIRT_TAG=$(oc image info -a ${REGISTRY_CONFIG} ${INSECURE_FLAG} ${VIRT_OPERATOR_IMAGE} -o json --filter-by-os=linux/amd64 | jq -r '.config.config.Labels["upstream-version"]')
-if [ -z "${KUBEVIRT_TAG}" ]
-then
-  # Try quay.io/openshift-virtualization/konflux-builds path as fallback
-  CSV_VERSION=$(oc get csv -n openshift-cnv -o json | jq -r '.items[] | select(.metadata.name | startswith("kubevirt-hyperconverged")).spec.version')
-  if [ -n "${CSV_VERSION}" ]; then
-    # Convert version like 4.21.0 to v4-21
-    KONFLUX_VERSION="v$(echo ${CSV_VERSION} | cut -d. -f1)-$(echo ${CSV_VERSION} | cut -d. -f2)"
-    # Extract image name and digest/tag from the original virt-operator image (e.g., virt-operator-rhel9@sha256:...)
-    IMAGE_NAME_WITH_DIGEST=$(echo "${VIRT_OPERATOR_IMAGE}" | sed 's|.*/||')
-    KONFLUX_IMAGE="quay.io/openshift-virtualization/konflux-builds/${KONFLUX_VERSION}/${IMAGE_NAME_WITH_DIGEST}"
-    echo "Trying konflux-builds fallback: ${KONFLUX_IMAGE}"
-    KUBEVIRT_TAG=$(oc image info -a ${REGISTRY_CONFIG} ${KONFLUX_IMAGE} -o json --filter-by-os=linux/amd64 | jq -r '.config.config.Labels["upstream-version"]')
-  fi
-fi
-if [ -z "${KUBEVIRT_TAG}" ]
-then
-  export KUBEVIRT_RELEASE="v1.8.2"
-  echo "WARNING: Could not auto-detect KubeVirt release tag. Using default: ${KUBEVIRT_RELEASE}"
-else
-  export KUBEVIRT_RELEASE="v${KUBEVIRT_TAG%%-[0-9]*}"
-fi
-
 mkdir -p ${RESULTS_DIR}
 START_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 echo ${START_TIMESTAMP} > ${RESULTS_DIR}/startTimestamp
@@ -223,7 +191,7 @@ cleanup_and_forward_signal() {
 # Set trap to cleanup and forward signals
 trap cleanup_and_forward_signal INT TERM
 
-ALLOWED_TEST_SUITES="compute|network|storage|ssp|tier2"
+ALLOWED_TEST_SUITES="compute|network|storage|ssp|tier2|csi"
 if [[ ! "$TEST_SUITES" =~ ^($ALLOWED_TEST_SUITES)(,($ALLOWED_TEST_SUITES))*$ ]]; then
   echo "Invalid TEST_SUITES format: \"$TEST_SUITES\""
   echo "Allowed values: comma-separated list of [$ALLOWED_TEST_SUITES]"
@@ -268,6 +236,43 @@ suite_enabled() {
   return 1
 }
 
+if suite_enabled "csi" && { [ -n "${TEST_FOCUS}" ] || [ -n "${TEST_SKIPS}" ]; }; then
+  echo "WARNING: TEST_FOCUS and TEST_SKIPS apply only to native Checkup suites; the csi Harness plan runs its full selection."
+fi
+
+HAS_NATIVE_SUITE=false
+for suite in "${SUITES[@]}"; do
+  if [[ "$suite" != "csi" ]]; then
+    HAS_NATIVE_SUITE=true
+    break
+  fi
+done
+
+if [ "$HAS_NATIVE_SUITE" = true ]; then
+  get_virtctl
+  REGISTRY_CONFIG=$(mktemp)
+  oc get secret/pull-secret -n openshift-config -o jsonpath='{.data.\\.dockerconfigjson}' | base64 -d > "${REGISTRY_CONFIG}"
+  export REGISTRY_CONFIG
+  VIRT_OPERATOR_IMAGE=$(oc get deployment virt-operator -n openshift-cnv -o jsonpath='{.spec.template.spec.containers[0].image}')
+  KUBEVIRT_TAG=$(oc image info -a ${REGISTRY_CONFIG} ${VIRT_OPERATOR_IMAGE} -o json --filter-by-os=linux/amd64 | jq -r '.config.config.Labels["upstream-version"]')
+  if [ -z "${KUBEVIRT_TAG}" ]; then
+    CSV_VERSION=$(oc get csv -n openshift-cnv -o json | jq -r '.items[] | select(.metadata.name | startswith("kubevirt-hyperconverged")).spec.version')
+    if [ -n "${CSV_VERSION}" ]; then
+      KONFLUX_VERSION="v$(echo ${CSV_VERSION} | cut -d. -f1)-$(echo ${CSV_VERSION} | cut -d. -f2)"
+      IMAGE_NAME_WITH_DIGEST=$(echo "${VIRT_OPERATOR_IMAGE}" | sed 's|.*/||')
+      KONFLUX_IMAGE="quay.io/openshift-virtualization/konflux-builds/${KONFLUX_VERSION}/${IMAGE_NAME_WITH_DIGEST}"
+      echo "Trying konflux-builds fallback: ${KONFLUX_IMAGE}"
+      KUBEVIRT_TAG=$(oc image info -a ${REGISTRY_CONFIG} ${KONFLUX_IMAGE} -o json --filter-by-os=linux/amd64 | jq -r '.config.config.Labels["upstream-version"]')
+    fi
+  fi
+  if [ -z "${KUBEVIRT_TAG}" ]; then
+    export KUBEVIRT_RELEASE="v1.8.2"
+    echo "WARNING: Could not auto-detect KubeVirt release tag. Using default: ${KUBEVIRT_RELEASE}"
+  else
+    export KUBEVIRT_RELEASE="v${KUBEVIRT_TAG%%-[0-9]*}"
+  fi
+fi
+
 if [ -z "${STORAGE_CLASS}" ]; then
   STORAGE_CLASS=$(oc get sc -o json | jq -r '[.items[] | select(.metadata.annotations."storageclass.kubernetes.io/is-default-class"=="true")][0]'.metadata.name)
 fi
@@ -276,6 +281,7 @@ if [ -z "${STORAGE_CLASS}" ]; then
   echo "Error: No storage class specified with STORAGE_CLASS env var and a default storage class was not found in the cluster"
   exit 1
 fi
+export STORAGE_CLASS
 
 # Find matching storage configuration file
 STORAGE_CONFIG_FILE=""
@@ -411,7 +417,7 @@ fi
 readonly EXIT_WINDOWS_SKIP=2
 
 WINDOWS_SETUP_SCRIPT="${SCRIPT_DIR}/windows/setup-golden-image.sh"
-if [ -f "${WINDOWS_SETUP_SCRIPT}" ]; then
+if [ "${HAS_NATIVE_SUITE}" = true ] && [ -f "${WINDOWS_SETUP_SCRIPT}" ]; then
   export STORAGE_CLASS
   export WIN_IMAGE_DOWNLOAD_URL
   export TEKTON_PIPELINE_VERSION
@@ -510,6 +516,71 @@ if suite_enabled "tier2"; then
   echo "Tier-2 test suite has finished."
 else
   echo "Tier-2 test suite has been skipped."
+fi
+
+if suite_enabled "csi"; then
+  CSI_RESULTS_DIR="${RESULTS_DIR}/csi"
+  CSI_REPORT_DIR="${CSI_RESULTS_DIR}/harness"
+  CSI_BACKENDS_FILE="${CSI_RESULTS_DIR}/backends.yaml"
+  mkdir -p "${CSI_REPORT_DIR}"
+  if [ "${DRY_RUN}" = "true" ]; then
+    echo "CSI Harness suite skipped (DRY_RUN=true)" | tee "${CSI_RESULTS_DIR}/csi-log.txt"
+    cat > "${CSI_RESULTS_DIR}/junit.results.xml" <<EOF
+<testsuite name="csi" tests="1" skipped="1"><testcase classname="csi" name="Harness run"><skipped message="DRY_RUN=true"/></testcase></testsuite>
+EOF
+    echo "0" > "${CSI_RESULTS_DIR}/.exit_code"
+  else
+  cat > "${CSI_BACKENDS_FILE}" <<EOF
+schema_version: "1"
+backends:
+  - name: checkup-storage
+    storage_class: ${STORAGE_CLASS}
+EOF
+
+  HARNESS_BIN="/harness-assets/bin/harness"
+  HARNESS_CSI_ASSETS="/harness-assets/csi"
+  export HOME="${CSI_RESULTS_DIR}/home"
+  mkdir -p "${HOME}/.config" "${HOME}/.local/share/containers"
+  export PATH="/harness-assets/bin:/opt/virtbench-venv/bin:${PATH}"
+  HARNESS_EXIT=0
+  echo "CSI Harness suite started" | tee "${CSI_RESULTS_DIR}/csi-log.txt"
+  set +e
+  set -o pipefail
+  (
+    export LD_LIBRARY_PATH="/opt/virtbench-python-libs${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    cp -R /opt/virtbench-runtime /tmp/virtbench-runtime
+    chmod -R u+rwX /tmp/virtbench-runtime
+    export VIRTBENCH_REPO="/tmp/virtbench-runtime"
+    "${HARNESS_BIN}" preflight \
+      --catalog "${HARNESS_CSI_ASSETS}/catalog.json" \
+      --plan "${HARNESS_CSI_ASSETS}/checkup-csi-smoke.yaml" \
+      --backends "${CSI_BACKENDS_FILE}" \
+      --backend checkup-storage \
+    && "${HARNESS_BIN}" run \
+      --catalog "${HARNESS_CSI_ASSETS}/catalog.json" \
+      --thresholds "${HARNESS_CSI_ASSETS}/thresholds.json" \
+      --plan "${HARNESS_CSI_ASSETS}/checkup-csi-smoke.yaml" \
+      --backends "${CSI_BACKENDS_FILE}" \
+      --backend checkup-storage \
+      --no-attestations \
+      --output "${CSI_REPORT_DIR}"
+  ) 2>&1 | tee -a "${CSI_RESULTS_DIR}/csi-log.txt"
+  HARNESS_EXIT=${PIPESTATUS[0]}
+  set +o pipefail
+  set -e
+  echo "CSI Harness suite finished exit=${HARNESS_EXIT}" | tee -a "${CSI_RESULTS_DIR}/csi-log.txt"
+  if [ -f "${CSI_REPORT_DIR}/report.junit.flat.xml" ]; then
+    cp "${CSI_REPORT_DIR}/report.junit.flat.xml" "${CSI_RESULTS_DIR}/junit.results.xml"
+  else
+    if [ "${HARNESS_EXIT}" -eq 0 ]; then HARNESS_EXIT=1; fi
+    cat > "${CSI_RESULTS_DIR}/junit.results.xml" <<EOF
+<testsuites><testsuite name="csi" tests="1" errors="1"><testcase classname="csi" name="Harness run"><error message="Harness exited ${HARNESS_EXIT} before producing a report"/></testcase></testsuite></testsuites>
+EOF
+  fi
+  echo "${HARNESS_EXIT}" > "${CSI_RESULTS_DIR}/.exit_code"
+  fi
+else
+  echo "CSI Harness suite has been skipped."
 fi
 
 
