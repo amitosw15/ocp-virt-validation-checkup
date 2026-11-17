@@ -18,6 +18,7 @@ TEST_SUITES=${TEST_SUITES:-"compute,network,storage,ssp,tier2"}
 FULL_SUITE=${FULL_SUITE:-"false"}
 STORAGE_CLASS=${STORAGE_CLASS:-""}
 STORAGE_CAPABILITIES=${STORAGE_CAPABILITIES:-""}
+HARNESS_IMAGE=${HARNESS_IMAGE:-"quay.io/amitos/storage-cert-harness@sha256:640ed10d7b371b2459a1a6eaa729b4c740cefc0d1a0a0c67fca23129d33b0654"}
 ACCEPT_WINDOWS_EULA=${ACCEPT_WINDOWS_EULA:-"false"}
 WIN_IMAGE_DOWNLOAD_URL=${WIN_IMAGE_DOWNLOAD_URL:-""}
 TEKTON_PIPELINE_VERSION=${TEKTON_PIPELINE_VERSION:-""}
@@ -35,7 +36,7 @@ for suite in "${TEST_SUITES_ARRAY[@]}"; do
 done
 STORAGE_SIZE="${TOTAL_STORAGE}Gi"
 
-ALLOWED_TEST_SUITES="compute|network|storage|ssp|tier2"
+ALLOWED_TEST_SUITES="compute|network|storage|ssp|tier2|csi"
 if [[ ! "$TEST_SUITES" =~ ^($ALLOWED_TEST_SUITES)(,($ALLOWED_TEST_SUITES))*$ ]]; then
   echo "Invalid TEST_SUITES format: \"$TEST_SUITES\""
   echo "Allowed values: comma-separated list of [$ALLOWED_TEST_SUITES]"
@@ -120,6 +121,65 @@ if [[ -n "${PRIMARY_NETWORK_BINDING_PLUGIN}" && ! "${PRIMARY_NETWORK_BINDING_PLU
   exit 1
 fi
 
+HARNESS_INIT_CONTAINER=""
+HARNESS_ASSET_MOUNTS=""
+HARNESS_ASSET_VOLUME=""
+if [[ ",${TEST_SUITES}," == *,csi,* ]] && [[ "${DRY_RUN}" != "true" ]]; then
+  HARNESS_INIT_CONTAINER=$(cat <<EOF
+      initContainers:
+        - name: harness-assets
+          image: ${HARNESS_IMAGE}
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /harness-assets/bin /harness-assets/csi /harness-assets/opt /harness-assets/python/lib
+              cp /usr/bin/harness /usr/bin/kube-burner /usr/bin/kube-burner-ocp /usr/bin/virtctl /usr/bin/oc /usr/bin/kubectl /harness-assets/bin/
+              cp /opt/harness/checkup/csi/* /harness-assets/csi/
+              cp -R /opt/virtbench-venv /harness-assets/opt/virtbench-venv
+              cp -R /opt/virtbench-runtime /harness-assets/opt/virtbench-runtime
+              cp /usr/bin/python3.12 /harness-assets/python/python3.12
+              cp /usr/lib64/libpython3.12.so.1.0 /harness-assets/python/libpython3.12.so.1.0
+              cp -R /usr/lib64/python3.12 /harness-assets/python/stdlib
+              cp -L /lib64/libcrypto.so.3 /harness-assets/python/lib/libcrypto.so.3
+              cp -L /lib64/libssl.so.3 /harness-assets/python/lib/libssl.so.3
+              chmod 0755 /harness-assets/bin/*
+          volumeMounts:
+            - name: harness-assets
+              mountPath: /harness-assets
+EOF
+)
+  HARNESS_ASSET_MOUNTS=$(cat <<EOF
+            - name: harness-assets
+              mountPath: /harness-assets
+            - name: harness-assets
+              mountPath: /opt/virtbench-venv
+              subPath: opt/virtbench-venv
+            - name: harness-assets
+              mountPath: /usr/bin/python3.12
+              subPath: python/python3.12
+            - name: harness-assets
+              mountPath: /usr/lib64/libpython3.12.so.1.0
+              subPath: python/libpython3.12.so.1.0
+            - name: harness-assets
+              mountPath: /usr/lib64/python3.12
+              subPath: python/stdlib
+            - name: harness-assets
+              mountPath: /opt/virtbench-runtime
+              subPath: opt/virtbench-runtime
+            - name: harness-assets
+              mountPath: /opt/virtbench-python-libs
+              subPath: python/lib
+EOF
+)
+  HARNESS_ASSET_VOLUME=$(cat <<EOF
+        - name: harness-assets
+          emptyDir: {}
+EOF
+)
+fi
+
 
 # Namespace
 cat <<EOF
@@ -196,6 +256,7 @@ spec:
       terminationGracePeriodSeconds: 60
       securityContext:
         fsGroup: 1001
+${HARNESS_INIT_CONTAINER}
       containers:
         - name: ocp-virt-validation-checkup
           image: ${OCP_VIRT_VALIDATION_IMAGE}
@@ -238,10 +299,12 @@ spec:
           volumeMounts:
             - name: results-volume
               mountPath: /results
+${HARNESS_ASSET_MOUNTS}
       restartPolicy: Never
       volumes:
         - name: results-volume
           persistentVolumeClaim:
             claimName: ocp-virt-validation-pvc-${TIMESTAMP}
+${HARNESS_ASSET_VOLUME}
   backoffLimit: 0
 EOF
