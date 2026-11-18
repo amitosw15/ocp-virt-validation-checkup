@@ -236,10 +236,6 @@ suite_enabled() {
   return 1
 }
 
-if suite_enabled "csi" && { [ -n "${TEST_FOCUS}" ] || [ -n "${TEST_SKIPS}" ]; }; then
-  echo "WARNING: TEST_FOCUS and TEST_SKIPS apply only to native Checkup suites; the csi Harness plan runs its full selection."
-fi
-
 HAS_NATIVE_SUITE=false
 for suite in "${SUITES[@]}"; do
   if [[ "$suite" != "csi" ]]; then

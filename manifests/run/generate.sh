@@ -19,6 +19,8 @@ FULL_SUITE=${FULL_SUITE:-"false"}
 STORAGE_CLASS=${STORAGE_CLASS:-""}
 STORAGE_CAPABILITIES=${STORAGE_CAPABILITIES:-""}
 HARNESS_IMAGE=${HARNESS_IMAGE:-"quay.io/amitos/storage-cert-harness@sha256:640ed10d7b371b2459a1a6eaa729b4c740cefc0d1a0a0c67fca23129d33b0654"}
+CSI_PLAN_CONFIG_MAP=${CSI_PLAN_CONFIG_MAP:-""}
+CSI_THRESHOLDS_CONFIG_MAP=${CSI_THRESHOLDS_CONFIG_MAP:-""}
 ACCEPT_WINDOWS_EULA=${ACCEPT_WINDOWS_EULA:-"false"}
 WIN_IMAGE_DOWNLOAD_URL=${WIN_IMAGE_DOWNLOAD_URL:-""}
 TEKTON_PIPELINE_VERSION=${TEKTON_PIPELINE_VERSION:-""}
@@ -121,12 +123,73 @@ if [[ -n "${PRIMARY_NETWORK_BINDING_PLUGIN}" && ! "${PRIMARY_NETWORK_BINDING_PLU
   exit 1
 fi
 
+CSI_CONFIG_ENV=""
+CSI_CONFIG_MOUNT=""
+CSI_CONFIG_VOLUME=""
+CSI_CAPABILITY_CHECK=""
+for csi_input in PLAN THRESHOLDS; do
+  csi_name_var="CSI_${csi_input}_CONFIG_MAP"
+  csi_name="${!csi_name_var}"
+  [[ -z "${csi_name}" ]] && continue
+  if [[ ",${TEST_SUITES}," != *,csi,* ]]; then
+    echo "Error: ${csi_name_var} requires the csi suite" >&2
+    exit 1
+  fi
+  if [[ ${#csi_name} -gt 253 || ! "${csi_name}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$ ]]; then
+    echo "Error: invalid ${csi_name_var} name" >&2
+    exit 1
+  fi
+  IFS='.' read -ra csi_name_labels <<< "${csi_name}"
+  for label in "${csi_name_labels[@]}"; do
+    if [[ ${#label} -gt 63 ]]; then
+      echo "Error: invalid ${csi_name_var} name" >&2
+      exit 1
+    fi
+  done
+  if [[ "${DRY_RUN}" == true ]]; then
+    echo "${csi_name_var} will not be mounted or validated during dry run" >&2
+    continue
+  fi
+  csi_lower="${csi_input,,}"
+  CSI_CONFIG_ENV+=$(cat <<EOF
+            - name: CSI_${csi_input}_CONFIG_DIR
+              value: /inputs/csi/${csi_lower}
+            - name: CSI_${csi_input}_CONFIG_MAP_NAME
+              value: ${csi_name}
+EOF
+)
+  CSI_CONFIG_ENV+=$'\n'
+  CSI_CONFIG_MOUNT+=$(cat <<EOF
+            - name: csi-${csi_lower}-input
+              mountPath: /inputs/csi/${csi_lower}
+              readOnly: true
+EOF
+)
+  CSI_CONFIG_MOUNT+=$'\n'
+  CSI_CONFIG_VOLUME+=$(cat <<EOF
+        - name: csi-${csi_lower}-input
+          configMap:
+            name: ${csi_name}
+            optional: true
+EOF
+)
+  CSI_CONFIG_VOLUME+=$'\n'
+  CSI_CAPABILITY_CHECK=$(cat <<EOF
+        - name: check-csi-config-capability
+          image: ${OCP_VIRT_VALIDATION_IMAGE}
+          command: ["/bin/bash", "-c"]
+          args: ['grep -q CSI_PLAN_CONFIG_DIR "\${HOME}/scripts/csi/run.sh" || { echo "Checkup image lacks CSI ConfigMap support"; exit 1; }']
+EOF
+)
+done
+
 HARNESS_INIT_CONTAINER=""
 HARNESS_ASSET_MOUNTS=""
 HARNESS_ASSET_VOLUME=""
 if [[ ",${TEST_SUITES}," == *,csi,* ]] && [[ "${DRY_RUN}" != "true" ]]; then
   HARNESS_INIT_CONTAINER=$(cat <<EOF
       initContainers:
+${CSI_CAPABILITY_CHECK}
         - name: harness-assets
           image: ${HARNESS_IMAGE}
           imagePullPolicy: Always
@@ -296,15 +359,18 @@ ${HARNESS_INIT_CONTAINER}
               value: "${TEKTON_PIPELINE_VERSION}"
             - name: PRIMARY_NETWORK_BINDING_PLUGIN
               value: "${PRIMARY_NETWORK_BINDING_PLUGIN}"
+${CSI_CONFIG_ENV}
           volumeMounts:
             - name: results-volume
               mountPath: /results
 ${HARNESS_ASSET_MOUNTS}
+${CSI_CONFIG_MOUNT}
       restartPolicy: Never
       volumes:
         - name: results-volume
           persistentVolumeClaim:
             claimName: ocp-virt-validation-pvc-${TIMESTAMP}
 ${HARNESS_ASSET_VOLUME}
+${CSI_CONFIG_VOLUME}
   backoffLimit: 0
 EOF

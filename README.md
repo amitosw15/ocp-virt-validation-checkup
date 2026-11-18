@@ -157,9 +157,20 @@ spec:
 
 **Note:** the value passed to `TEST_SUITES` should be comma-separated.
 
-Set `TEST_SUITES=csi` to run the bundled storage certification Harness plan as a sixth suite. This runs the `level3-customer-no-load-80` plan after the selected native suites; the five native suites remain the default. `TEST_FOCUS` and `TEST_SKIPS` do not filter the Harness plan. Set `HARNESS_IMAGE` when generating manifests to use a mirrored or development Harness image that includes the CSI assets and tools. The bundled plan is certification scale and its target-node and snapshot-batch inputs must be populated in the image; Harness preflight stops the suite before workload launch while placeholders remain.
+Set `TEST_SUITES=csi` to run the bundled storage certification Harness plan as a sixth suite. This runs the `level3-customer-no-load-80` plan after the selected native suites; the five native suites remain the default. For CSI, `TEST_FOCUS` and `TEST_SKIPS` accept pipe-separated exact Harness TR IDs and are applied to both preflight and execution. Native suites interpret these values as test-name patterns, so mixed-suite filters must be chosen with both interpretations in mind. A focus with no matching CSI ID fails the CSI suite. Set `HARNESS_IMAGE` when generating manifests to use a mirrored or development Harness image that includes the CSI assets and tools. The bundled plan is certification scale and its target-node and snapshot-batch inputs must be populated in the image; Harness preflight stops the suite before workload launch while placeholders remain.
 
 The Harness flat JUnit report is copied to `csi/junit.results.xml` and read by Checkup’s existing result parser. Detailed Harness reports and logs are retained under `csi/harness` in the results archive.
+
+To replace either bundled input, create a ConfigMap containing the complete native Harness file in the Job namespace:
+
+```sh
+oc create configmap csi-plan -n ocp-virt-validation --from-file=plan.yaml=./plan.yaml
+oc create configmap csi-thresholds -n ocp-virt-validation --from-file=thresholds.json=./thresholds.json
+TEST_SUITES=csi CSI_PLAN_CONFIG_MAP=csi-plan CSI_THRESHOLDS_CONFIG_MAP=csi-thresholds \
+  OCP_VIRT_VALIDATION_IMAGE=<checkup-image> ./manifests/run/generate.sh > checkup.yaml
+```
+
+Each ConfigMap is optional. An omitted input uses its bundled file; a named ConfigMap must exist and contain its nonempty key. Both files must be complete native Harness documents. The Harness validates the files and checks thresholds against the image-owned catalog. The Job snapshots supplied files and records their sources and hashes in `csi/configuration.json`. These files are not a credential mechanism. `DRY_RUN=true` skips CSI and does not mount or validate inputs. Job completion alone does not imply every Harness verdict passed; inspect CSI JUnit and `.exit_code`.
 
 #### Test Skips
 In order to skip one or more test cases, a `TEST_SKIPS` environment variable can be specified.
