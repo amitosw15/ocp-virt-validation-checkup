@@ -157,7 +157,7 @@ spec:
 
 **Note:** the value passed to `TEST_SUITES` should be comma-separated.
 
-Set `TEST_SUITES=csi` to run the bundled storage certification Harness plan as a sixth suite. This runs the `level3-customer-no-load-80` plan after the selected native suites; the five native suites remain the default. `TEST_FOCUS` and `TEST_SKIPS` do not filter the Harness plan. Set `HARNESS_IMAGE` when generating manifests to use a mirrored or development Harness image that includes the CSI assets and tools. The bundled plan is certification scale and its target-node and snapshot-batch inputs must be populated in the image; Harness preflight stops the suite before workload launch while placeholders remain.
+Set `TEST_SUITES=csi` to run the bundled storage certification Harness plan as a sixth suite. This runs the `level3-customer-no-load-80` plan after the selected native suites; the five native suites remain the default. For CSI, `TEST_FOCUS` and `TEST_SKIPS` accept pipe-separated exact Harness TR IDs and are applied to both preflight and execution. Native suites interpret these values as test-name patterns, so mixed-suite filters must be chosen with both interpretations in mind. A focus with no matching CSI ID fails the CSI suite. Set `HARNESS_IMAGE` when generating manifests to use a mirrored or development Harness image that includes the CSI assets and tools. The bundled plan is certification scale and its target-node and snapshot-batch inputs must be populated in the image; Harness preflight stops the suite before workload launch while placeholders remain.
 
 The Harness flat JUnit report is copied to `csi/junit.results.xml` and read by Checkup’s existing result parser. Detailed Harness reports and logs are retained under `csi/harness` in the results archive.
 

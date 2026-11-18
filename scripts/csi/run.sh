@@ -24,6 +24,15 @@ EOF
   mkdir -p "${HOME}/.config" "${HOME}/.local/share/containers"
   export PATH="/harness-assets/bin:/opt/virtbench-venv/bin:${PATH}"
   HARNESS_EXIT=0
+  CSI_SELECTION_ARGS=()
+  if [ -n "${TEST_FOCUS:-}" ]; then
+    IFS='|' read -ra focus_ids <<< "${TEST_FOCUS}"
+    for id in "${focus_ids[@]}"; do CSI_SELECTION_ARGS+=(--focus "${id}"); done
+  fi
+  if [ -n "${TEST_SKIPS:-}" ]; then
+    IFS='|' read -ra skip_ids <<< "${TEST_SKIPS}"
+    for id in "${skip_ids[@]}"; do CSI_SELECTION_ARGS+=(--skip "${id}"); done
+  fi
   CSI_PLAN="${HARNESS_CSI_ASSETS}/checkup-csi-smoke.yaml"
   CSI_THRESHOLDS="${HARNESS_CSI_ASSETS}/thresholds.json"
   if [ -n "${CSI_PLAN_CONFIG_DIR:-}" ]; then CSI_PLAN="${CSI_RESULTS_DIR}/inputs/plan.yaml"; fi
@@ -72,6 +81,7 @@ EOF
       --plan "${CSI_PLAN}" \
       --backends "${CSI_BACKENDS_FILE}" \
       --backend checkup-storage \
+      "${CSI_SELECTION_ARGS[@]}" \
     && "${HARNESS_BIN}" run \
       --catalog "${HARNESS_CSI_ASSETS}/catalog.json" \
       --thresholds "${CSI_THRESHOLDS}" \
@@ -79,7 +89,8 @@ EOF
       --backends "${CSI_BACKENDS_FILE}" \
       --backend checkup-storage \
       --no-attestations \
-      --output "${CSI_REPORT_DIR}"
+      --output "${CSI_REPORT_DIR}" \
+      "${CSI_SELECTION_ARGS[@]}"
   ) 2>&1 | tee -a "${CSI_RESULTS_DIR}/csi-log.txt"
   HARNESS_EXIT=${PIPESTATUS[0]}
   set +o pipefail

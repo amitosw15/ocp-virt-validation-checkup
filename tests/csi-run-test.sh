@@ -60,3 +60,19 @@ run_case invalid '' ''
 test "$(cat "$RESULTS_DIR/csi/.exit_code")" != 0
 ! grep -q '^preflight\|^run ' "$CALLS"
 grep -q '<error ' "$RESULTS_DIR/csi/junit.results.xml"
+
+export FAIL_VALIDATE=false TEST_FOCUS='EX-001|EX-003' TEST_SKIPS='EX-003'
+run_case selection '' ''
+test "$(cat "$RESULTS_DIR/csi/.exit_code")" = 0
+grep -q '^preflight .*--focus EX-001 --focus EX-003 --skip EX-003$' "$CALLS"
+grep -q '^run .*--focus EX-001 --focus EX-003 --skip EX-003$' "$CALLS"
+
+export TEST_FOCUS='' TEST_SKIPS='EX-001|EX-003'
+run_case skips-only '' ''
+grep -q '^preflight .*--skip EX-001 --skip EX-003$' "$CALLS"
+grep -q '^run .*--skip EX-001 --skip EX-003$' "$CALLS"
+! grep -q -- '--focus' "$CALLS"
+
+export TEST_FOCUS='' TEST_SKIPS=''
+run_case no-selection '' ''
+! grep -q -- '--focus\|--skip' "$CALLS"
